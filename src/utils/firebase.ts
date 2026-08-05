@@ -3,17 +3,32 @@ import path from 'path';
 import { env } from '../config/env';
 import { logger } from './logger';
 
-// Lazy, optional Firebase Admin init for JWT verification at the edge. Same
-// admin project the services use. When ADMIN_SERVICE_ACCOUNT is unset the
-// gateway runs in a dev mode where authenticate() attaches a synthetic user
-// instead of verifying — never enable that in production.
+// Lazy Firebase Admin init for JWT verification at the edge, against the same
+// admin project the services use.
+//
+// Unconfigured is a FAILURE, not a mode. `authenticate` answers 503 on every
+// protected route when this never became ready — so the only thing missing
+// credentials cost is a diagnosable refusal, never an open door. The banner
+// below is loud in production because that is the one environment where nobody
+// is watching the console at the moment it happens.
 let ready = false;
+
+function reportUnconfigured(reason: string): void {
+  if (env.isProduction) {
+    logger.error(
+      `[firebase] FATAL: ${reason} — JWT verification is UNAVAILABLE and every ` +
+        'protected route will answer 503. Set ADMIN_SERVICE_ACCOUNT.',
+    );
+  } else {
+    logger.warn(`[firebase] ${reason} — protected routes answer 503 unless AUTH_DISABLED=true.`);
+  }
+}
 
 export function initFirebase(): void {
   if (admin.apps.length) { ready = true; return; }
   const raw = env.adminServiceAccount;
   if (!raw) {
-    logger.warn('[firebase] ADMIN_SERVICE_ACCOUNT not set — JWT verification disabled (dev mode).');
+    reportUnconfigured('ADMIN_SERVICE_ACCOUNT not set');
     return;
   }
   try {
@@ -25,7 +40,7 @@ export function initFirebase(): void {
     ready = true;
     logger.info('[firebase] Admin initialised for JWT verification.');
   } catch (e) {
-    logger.error(`[firebase] init failed: ${(e as Error).message}`);
+    reportUnconfigured(`init failed: ${(e as Error).message}`);
   }
 }
 
