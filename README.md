@@ -4,32 +4,55 @@
 
 Part of the **Cocarr Enterprise Platform** ([CoCarr-org](https://github.com/CoCarr-org)).
 
-Topics: `nodejs`, `express`, `gateway`, `jwt`, `api`, `microservices`
+Topics: `nodejs`, `typescript`, `express`, `gateway`, `jwt`, `api`, `microservices`
 
 ## Purpose
-Single ingress for the platform: authenticates requests, applies rate limiting, and routes traffic to the identity, authorization, workspace, core and notification services.
+The single public ingress (`api.cocarr.com`). It verifies JWTs, applies rate
+limiting, sets CORS and security headers, threads a correlation id, logs, and
+**reverse-proxies** to the identity, authorization, workspace, core and
+notification services. **No business logic** lives here.
 
 ## Architecture
-This repository is one component of the Cocarr platform, a service-oriented
-system fronted by the API gateway. Requests flow through the gateway to the
-identity, authorization, workspace, core and notification services, each backed
-by its own database. See [`cocarr-docs`](https://github.com/CoCarr-org/cocarr-docs)
-for the full platform architecture and Architecture Decision Records.
+```
+Internet → api.cocarr.com → API Gateway
+   ├── /v1/auth       → Identity Service        (public)
+   ├── /v1/platform   → Authorization Service    (JWT)
+   ├── /v1/workspace  → Workspace API            (JWT)
+   ├── /v1/core       → Core API                 (JWT)
+   └── /v1/notify     → Notification Service      (JWT)
+```
+Each router is mounted at its prefix; the proxy prepends `/v1` to the remaining
+path, so `/v1/core/booking` reaches Core API at `/v1/booking`. Upstream URLs are
+env-driven; an unreachable upstream returns a clean `502` (`BAD_GATEWAY`). Today
+`core` and `workspace` exist; `identity`/`authorization`/`notification` are
+configured and `502` until deployed.
 
 ## Technology Stack
-- Node.js
+- Node.js + **TypeScript** (compiled to `dist/`)
 - Express
-- JWT
-- http-proxy-middleware
-- Jest
+- http-proxy-middleware v3 (streaming reverse proxy — no body parsing)
+- firebase-admin (JWT verification), helmet, cors, express-rate-limit
+- winston (logging), swagger-ui-express (`/docs`)
 
 ## Folder Structure
 ```
-src/     # Gateway routes, middleware, proxy configuration
-docs/    # Routing map and gateway policies
-tests/   # Integration and contract tests
-.github/ # Issue/PR templates, workflows, CODEOWNERS
+src/
+  config/      # env, services (registry), routes (table), swagger
+  middleware/  # authenticate, rateLimiter, correlationId, requestLogger,
+               #   errorHandler, cors, security, validate
+  proxy/       # identity/authorization/workspace/core/notification proxies
+  routes/      # auth, platform, workspace, core, health routers
+  utils/       # logger, firebase, proxyFactory
+  app.ts       # assembles middleware + routes
+  server.ts    # entry point
 ```
+
+## Endpoints
+- `GET /health` — liveness (no upstream calls; safe for Railway healthcheck)
+- `GET /health/routes` — the route table
+- `GET /health/services` — deep check: pings each upstream `/v1/health`
+- `GET /docs` — Swagger UI (routing surface)
+- `…/v1/{auth,platform,workspace,core,notify}/*` — proxied
 
 ## Getting Started
 ```bash
