@@ -1,5 +1,6 @@
 import express, { Express } from 'express';
 import { securityMiddleware } from './middleware/security';
+import { stripMintedHeaders } from './middleware/trustedHeaders';
 import { corsMiddleware } from './middleware/cors';
 import { correlationId } from './middleware/correlationId';
 import { requestLogger } from './middleware/requestLogger';
@@ -20,6 +21,17 @@ import { notificationProxy } from './proxy/notification.proxy';
 export function createApp(): Express {
   const app = express();
   app.disable('x-powered-by');
+
+  // Railway (like any platform proxy) terminates TLS in front of us, so the
+  // client address arrives in X-Forwarded-For. Without this, express-rate-limit
+  // sees ONE ip — the platform's — and rate-limits every caller as if they were
+  // the same client, while any per-ip logging records the proxy.
+  app.set('trust proxy', 1);
+
+  // FIRST, before anything can read them: drop client-supplied copies of the
+  // headers this gateway mints. Everything downstream — including the upstream
+  // services' trust in x-user-id — depends on these being unforgeable.
+  app.use(stripMintedHeaders);
 
   // Cross-cutting edge middleware, in order.
   app.use(securityMiddleware);

@@ -1,5 +1,6 @@
 import { createProxyMiddleware, Options } from 'http-proxy-middleware';
 import { logger } from './logger';
+import { env } from '../config/env';
 
 // Build a streaming reverse proxy to one upstream service. The gateway does NOT
 // parse request bodies (see app.ts) so proxied POST/PUT bodies stream straight
@@ -20,6 +21,12 @@ export function serviceProxy(name: string, target: string, prefix: string) {
     on: {
       proxyReq: (proxyReq: any, req: any) => {
         if (req.correlationId) proxyReq.setHeader('x-correlation-id', req.correlationId);
+        // Proof this request came through the gateway. Upstreams trust
+        // x-user-id / x-identity-id ONLY when this matches, which is what lets
+        // them skip a second Firebase verification. Set here rather than in
+        // authenticate() so it also covers the public /v1/auth routes, where the
+        // upstream still needs to know the hop was ours.
+        if (env.gatewayKey) proxyReq.setHeader('x-gateway-key', env.gatewayKey);
       },
       error: (err: Error, _req: any, res: any) => {
         logger.error(`[proxy:${name}] ${err.message}`);
