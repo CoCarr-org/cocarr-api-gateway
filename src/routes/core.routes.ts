@@ -27,8 +27,22 @@ import { coreProxy } from '../proxy/core.proxy';
 //                     bucket. It is matched FIRST and excluded explicitly.
 //   POST /image     — the upload itself.
 //
-// Hence: method GET only, and the key must not be the literal `url`.
-const PUBLIC_IMAGE = /^\/image\/(?!url(?:\/|$)).+/;
+// RÉSUMÉS ARE IN THE SAME BUCKET AND MUST NOT BE PUBLIC.
+//
+// Candidate CVs uploaded through the careers site are stored under `resume/`.
+// They are personal data — full name, address, phone number, employment history
+// — and the whole reason they moved off Google Drive is that the old backend
+// shared every one of them with ANYONE_WITH_LINK. Serving them from this proxy
+// would recreate that exactly, with a uuid instead of a Drive id.
+//
+// They are read through an AUTHENTICATED workspace route instead
+// (`GET /v1/workspace/candidates/:id/resume`). This exclusion is the other half
+// of that: without it, the private route is decoration, because the object is
+// reachable here without a token.
+//
+// Hence: method GET only, the key must not be the literal `url`, and it must
+// not be under `resume/`.
+const PUBLIC_IMAGE = /^\/image\/(?!url(?:\/|$))(?!resume\/).+/;
 
 const authenticateUnlessPublicImage: RequestHandler = (req, res, next) => {
   if (req.method === 'GET' && PUBLIC_IMAGE.test(req.path)) {
