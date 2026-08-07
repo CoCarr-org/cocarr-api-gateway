@@ -19,7 +19,7 @@ import http from 'node:http';
 // Mirrors src/routes/core.routes.ts. Kept in sync by hand: this is a guard, and
 // a guard that imports the thing it guards from a TS build step is a guard that
 // gets skipped.
-const PUBLIC_IMAGE = /^\/image\/(?!url(?:\/|$)).+/;
+const PUBLIC_IMAGE = /^\/image\/(?!url(?:\/|$))(?!resume\/).+/;
 
 const app = express();
 const core = express.Router();
@@ -45,6 +45,9 @@ const CASES = [
   ['GET', '/v1/core/image/vehicle/a/b/c', false, 'deep key — public'],
   ['GET', '/v1/core/image/urlish-key', false, 'key merely starting with "url" — public'],
 
+  ['GET', '/v1/core/image/resume/2f6a-uuid', true, 'CANDIDATE CV — personal data, must stay authed'],
+  ['GET', '/v1/core/image/resume/', true, 'resume prefix, no key'],
+  ['GET', '/v1/core/image/resumes/2f6a-uuid', false, 'different folder that merely starts with "resume"'],
   ['GET', '/v1/core/image/url', true, 'PRESIGNED UPLOAD CREDENTIALS — must stay authed'],
   ['GET', '/v1/core/image/url/', true, 'same, trailing slash'],
   ['GET', '/v1/core/image/url?folder=kyc', true, 'same, with query string'],
