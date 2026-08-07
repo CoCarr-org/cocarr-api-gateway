@@ -57,10 +57,47 @@ Upstream base URLs come from env (`*_SERVICE_URL`). Today only `core`
 (cocarr-core-api) and `workspace` (cocarr-workspace-api) exist; the others are
 configured and return 502 until built.
 
+## TWO Firebase projects — staff and consumers are different audiences
+`ADMIN_SERVICE_ACCOUNT` (staff: admin/workspace/operations portals) **and**
+`USER_SERVICE_ACCOUNT` (riders/hosts: the `cocarr-front-end` project). Both are
+initialised as named apps; `verifyToken` tries each and the first to accept the
+token wins, returning which project it was.
+
+**A token is only valid against the project that minted it.** The gateway loaded
+the admin credential alone, which was invisible while it fronted staff portals
+only — then every rider and host token answered `401 Invalid or expired token`, a
+message that blames the credential rather than naming the missing config.
+
+The projects are **tried, not routed by prefix**: `/v1/core` serves riders *and*
+the staff operations portal, so a per-prefix mapping locks one of them out. The
+token's own `aud` is the answer and verifying is how it is established.
+
+Configuring only one project is legitimate — callers of the other get a 401 and
+the boot log names the missing variable. **Neither** ⇒ 503 on every protected
+route. Those are two different facts; don't collapse them.
+
+`x-auth-project` (`admin` | `user`) is minted alongside `x-user-id` and is in
+`MINTED_HEADERS`. The two projects have **separate uid spaces**, so an upstream
+trusting `x-user-id` without it cannot tell a rider uid from a staff uid.
+
+## The image proxy is PUBLIC, by necessity
+`GET /v1/core/image/<key>` bypasses `authenticate` (`core.routes.ts`). Clients
+render these with `<img src>` / RN `<Image source>`, which cannot send an
+Authorization header — behind `authenticate` every image on the rider web and
+mobile apps answers 401. The legacy monolith served the same route with no auth,
+so nothing became reachable that was not already; the key is an unguessable uuid
+and possession of it is what grants access.
+
+⚠ **`GET /image/url` issues PRESIGNED UPLOAD CREDENTIALS** and lives under the
+same prefix. It is excluded explicitly, as is `POST`. A naive `/image/*`
+exception hands anonymous callers write access to the bucket.
+`scripts/checkPublicImagePaths.mjs` asserts all of this against a real Express
+mount (it also pins the assumption that `req.path` is mount-relative, which the
+anchored pattern depends on). Run it after touching that file.
+
 ## Not done yet
-- Public core exceptions: a few core routes (image proxy `/v1/image`, payment
-  webhook `/v1/hook`) must bypass `authenticate` when the gateway becomes the
-  SOLE entry. Add per-path exceptions in `core.routes.ts` at that cutover.
+- Public core exception for the payment webhook (`/v1/hook`) when Razorpay is
+  repointed at the gateway — it cannot send a Firebase token either.
 - Delegating auth to the Identity Service (the gateway verifies the Firebase JWT
   directly for now).
 - Per-route rate limits, request/response schema validation, tests.

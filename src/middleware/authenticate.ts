@@ -1,8 +1,7 @@
 import { Response, NextFunction } from 'express';
-import admin from 'firebase-admin';
 import { WithCorrelation } from './correlationId';
 import { env } from '../config/env';
-import { firebaseReady } from '../utils/firebase';
+import { firebaseReady, verifyToken } from '../utils/firebase';
 import { resolveIdentityId } from '../utils/identityResolver';
 import { logger } from '../utils/logger';
 
@@ -55,17 +54,22 @@ export async function authenticate(
     return;
   }
 
-  let decoded: admin.auth.DecodedIdToken;
-  try {
-    decoded = await admin.auth().verifyIdToken(token);
-  } catch {
+  // Verified against whichever Firebase project minted it — staff and consumers
+  // live in different projects and both come through this gateway.
+  const verified = await verifyToken(token);
+  if (!verified) {
     unauthenticated(res, 'Invalid or expired token');
     return;
   }
+  const { decoded, project } = verified;
 
   req.user = decoded;
   req.headers['x-user-id'] = decoded.uid;
   req.headers['x-auth-via'] = 'gateway';
+  // Which audience this caller belongs to. Upstreams that trust the edge need
+  // it to avoid treating a rider uid as a staff uid: the two projects have
+  // separate uid spaces, so a uid alone does not say who somebody is.
+  req.headers['x-auth-project'] = project;
   if (decoded.email) req.headers['x-user-email'] = decoded.email;
 
   // Best effort — see identityResolver. A caller with no identity row yet (it is
