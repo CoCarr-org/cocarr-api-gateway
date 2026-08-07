@@ -18,6 +18,11 @@ export const MINTED_HEADERS = [
   'x-user-email',
   'x-identity-id',
   'x-auth-via',
+  // Which Firebase project verified this caller ('admin' = staff, 'user' =
+  // rider/host). The two projects have SEPARATE uid spaces, so an upstream that
+  // trusts x-user-id without this cannot tell a rider uid from a staff uid — and
+  // a client allowed to set it could claim to be staff.
+  'x-auth-project',
 ] as const;
 
 export function stripMintedHeaders(req: Request, _res: Response, next: NextFunction): void {
