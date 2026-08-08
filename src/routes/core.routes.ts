@@ -64,6 +64,27 @@ const PUBLIC_IMAGE = /^\/image\/(?!url(?:\/|$))(?!resume\/).+/;
 // `/referral/status` and `/referral/validate` are public for the signup screen,
 // which runs before the referee has an account. `/referral` and
 // `/referral/history` are the user's own dashboard and stay authenticated.
+// THE PRE-LOGIN BROWSE SURFACE. The rider web app lets an anonymous visitor
+// search for cars, open a car, see its offers and a price estimate BEFORE
+// signing in — the whole funnel that leads to the login prompt. Every one of
+// these is fetched through the web app's unauthenticated `publicApi`, so gating
+// them here answers 401 `Missing Authorization header` and the landing page's
+// search returns "Missing Authorization header" instead of results.
+//
+// As with the entries above, this does NOT widen access: each is already
+// unauthenticated (or `authenticateUserOptional`) on the core service itself
+// (`vehicleRouter`, `brandRouter`, `offerRouter`, `bookingRouter`,
+// `utilityRouter`), so the gateway was simply stricter than the service it
+// fronts. The legacy monolith served all of them with no token.
+//
+// METHOD-SCOPED, AND DELIBERATELY NARROW, for the same reason the city entries
+// are: the write routes that share these prefixes carry `authenticateAdmin`
+// upstream and this gateway's `authenticate` is the only thing in front of the
+// few that don't. `POST /vehicle`, `PUT /vehicle/:id`, `POST /offers`,
+// `POST /brand` are all admin — matching GET (and only the exact public POSTs)
+// never reaches them. `/booking/summary` is pinned exactly, so it can never
+// widen to the authenticated `/booking/last-booking`, `/booking/:id` or the
+// admin `GET /booking` beside it. Never relax one of these to a bare prefix.
 const PUBLIC_CORE: ReadonlyArray<readonly [string, RegExp]> = [
   ['POST', /^\/user\/send-otp\/?$/],
   ['POST', /^\/user\/verify-otp\/?$/],
@@ -71,6 +92,23 @@ const PUBLIC_CORE: ReadonlyArray<readonly [string, RegExp]> = [
   ['GET', /^\/city\/[^/]+\/?$/],
   ['GET', /^\/referral\/status\/?$/],
   ['POST', /^\/referral\/validate\/?$/],
+  // Car search + listing (`authenticateUserOptional` upstream).
+  ['GET', /^\/vehicle\/?$/],
+  // A single car's detail page (no auth upstream).
+  ['GET', /^\/vehicle\/[^/]+\/?$/],
+  // Brand filter chips on the search page (no auth upstream).
+  ['GET', /^\/brand\/?$/],
+  // Offers shown on a car, and validating one before booking
+  // (`getOffers` no auth; `validateOffer` `authenticateUserOptional`).
+  ['GET', /^\/offers\/?$/],
+  ['GET', /^\/offers\/validate\/[^/]+\/?$/],
+  // Price estimate on the car detail page (`authenticateUserOptional`).
+  ['GET', /^\/booking\/summary\/?$/],
+  // Pickup-location search + validation used before an account exists
+  // (autocomplete/validate-place/validate-geo, all no auth upstream).
+  ['GET', /^\/utility\/autocomplete\/?$/],
+  ['POST', /^\/utility\/validate-place\/?$/],
+  ['POST', /^\/utility\/validate-geo\/?$/],
 ];
 
 // `req.path` is mount-relative (`/city`, not `/v1/core/city`) and excludes the
