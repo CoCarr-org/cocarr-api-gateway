@@ -126,6 +126,27 @@ const authenticateUnlessPublic: RequestHandler = (req, res, next) => {
   authenticate(req as Parameters<typeof authenticate>[0], res, next);
 };
 
+// The image proxy is embedded cross-subdomain: the rider web app on
+// develop.cocarr.com, the admin and careers sites, and the mobile app all
+// render these objects with a plain <img src>. Helmet's default
+// `Cross-Origin-Resource-Policy: same-origin` blocks exactly that — the image
+// answers 200 but the browser refuses to paint it, failing with
+// `ERR_BLOCKED_BY_RESPONSE.NotSameOrigin`. CORS governs fetch(); CORP governs
+// <img>, so allowing the origin in CORS is not enough on its own.
+//
+// Relax CORP to `cross-origin` for the PUBLIC image responses ONLY. They are
+// already unauthenticated and deliberately embeddable (an unguessable-uuid key
+// is what grants access), so this widens nothing that auth was protecting —
+// every other response keeps Helmet's strict `same-origin`. Set on `res` before
+// the proxy streams; the upstream sends no CORP of its own, so this value is
+// what reaches the client (verified: Helmet's own header survives the same way).
+const allowCrossOriginForImages: RequestHandler = (req, res, next) => {
+  if (req.method === 'GET' && PUBLIC_IMAGE.test(req.path)) {
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  }
+  next();
+};
+
 const router = Router();
-router.use(authenticateUnlessPublic, coreProxy);
+router.use(allowCrossOriginForImages, authenticateUnlessPublic, coreProxy);
 export default router;
