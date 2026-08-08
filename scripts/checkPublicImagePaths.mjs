@@ -21,11 +21,23 @@ import http from 'node:http';
 // gets skipped.
 const PUBLIC_IMAGE = /^\/image\/(?!url(?:\/|$))(?!resume\/).+/;
 
+const PUBLIC_CORE = [
+  ['POST', /^\/user\/send-otp\/?$/],
+  ['POST', /^\/user\/verify-otp\/?$/],
+  ['GET', /^\/city\/?$/],
+  ['GET', /^\/city\/[^/]+\/?$/],
+  ['GET', /^\/referral\/status\/?$/],
+  ['POST', /^\/referral\/validate\/?$/],
+];
+
+const publicCheck = (method, path) =>
+  (method === 'GET' && PUBLIC_IMAGE.test(path))
+  || PUBLIC_CORE.some(([m, pattern]) => m === method && pattern.test(path));
+
 const app = express();
 const core = express.Router();
 core.use((req, res) => {
-  const isPublic = req.method === 'GET' && PUBLIC_IMAGE.test(req.path);
-  res.json({ authenticated: !isPublic, seenPath: req.path });
+  res.json({ authenticated: !publicCheck(req.method, req.path), seenPath: req.path });
 });
 app.use('/v1/core', core);
 
@@ -60,6 +72,29 @@ const CASES = [
   ['GET', '/v1/core/booking/123', true, 'ordinary core route'],
   ['GET', '/v1/core/admin/users', true, 'admin must never be public'],
   ['GET', '/v1/core/settings', true, 'settings must stay authed'],
+
+  // The pre-auth surface: reachable without a token, or login deadlocks.
+  ['POST', '/v1/core/user/send-otp', false, 'issues the OTP — cannot require a token'],
+  ['POST', '/v1/core/user/verify-otp', false, 'exchanges OTP for a token — cannot require one'],
+  ['GET', '/v1/core/city', false, 'city list — public reference data'],
+  ['GET', '/v1/core/city/7', false, 'single city — public reference data'],
+  ['GET', '/v1/core/referral/status', false, 'signup screen, before an account exists'],
+  ['POST', '/v1/core/referral/validate', false, 'signup screen, before an account exists'],
+
+  // CITY WRITES HAVE NO AUTH UPSTREAM — this gateway is the only thing in front
+  // of them. If any of these flips to public, anonymous callers can edit and
+  // delete cities.
+  ['PUT', '/v1/core/city/7', true, 'NO auth upstream — gateway must gate it'],
+  ['DELETE', '/v1/core/city/7', true, 'NO auth upstream — gateway must gate it'],
+  ['POST', '/v1/core/city', true, 'city create must stay authed'],
+  ['GET', '/v1/core/city/7/pickup-points', true, 'deeper path is not the public :id route'],
+
+  // Neighbours of the pre-auth routes that must NOT be dragged public with them.
+  ['GET', '/v1/core/user', true, 'user list is admin-only upstream'],
+  ['POST', '/v1/core/user/send-otp/x', true, 'no suffix smuggling past the anchor'],
+  ['GET', '/v1/core/user/send-otp', true, 'wrong method — not the public route'],
+  ['GET', '/v1/core/referral', true, "the user's own referral dashboard"],
+  ['GET', '/v1/core/referral/history', true, "the user's own referral history"],
 ];
 
 let failed = 0;
