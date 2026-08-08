@@ -25,6 +25,16 @@ threads a correlation id, logs, and proxies to the services. **No business logic
   — failing to boot would hide the reason it is refusing.
 - **`trust proxy` is set to 1.** Railway terminates TLS in front of us; without
   it `express-rate-limit` sees one ip and limits every caller as one client.
+- **This gateway is the ONLY CORS boundary.** `proxyFactory` strips the browser's
+  `Origin` before proxying, so upstreams see server-to-server calls and their own
+  `cors()` allowlists never fire. Do not "restore" the header. `cocarr-core-api`
+  keeps an identical allowlist off its own `CORS_ORIGINS` while having **no public
+  domain** — reachable only via `core.railway.internal`, through us — so it could
+  only ever judge an Origin we forwarded. When `develop.cocarr.com` was added to
+  `CORS_ORIGINS` here but not there, login cleared the gateway and died one hop
+  later with `Not allowed by CORS`, a browser-shaped error from a service no
+  browser can address. Add a new web origin to **this** service's `CORS_ORIGINS`
+  and nowhere else.
 
 ## Trusted-edge header contract
 The gateway MINTS `x-gateway-key`, `x-user-id`, `x-user-email`, `x-identity-id`,

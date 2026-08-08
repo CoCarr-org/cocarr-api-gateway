@@ -21,6 +21,24 @@ export function serviceProxy(name: string, target: string, prefix: string) {
     on: {
       proxyReq: (proxyReq: any, req: any) => {
         if (req.correlationId) proxyReq.setHeader('x-correlation-id', req.correlationId);
+        // THE GATEWAY IS THE CORS BOUNDARY, so the browser's Origin does not
+        // travel to the upstream. By the time we get here the origin has already
+        // been checked against CORS_ORIGINS (middleware/cors.ts) and the response
+        // headers decided; forwarding it only invites a SECOND, independent CORS
+        // check on a service that no browser can reach.
+        //
+        // That second check is not hypothetical. cocarr-core-api runs the same
+        // `cors()` allowlist off its own CORS_ORIGINS, and it has no public
+        // domain — it is reachable only on core.railway.internal, through us. So
+        // its allowlist could never see anything except an Origin we forwarded,
+        // and when develop.cocarr.com was added here but not there, login passed
+        // the gateway and died one hop later with "Not allowed by CORS": a
+        // browser-shaped error from a service no browser can address.
+        //
+        // Removing it makes every proxied request read as what it actually is —
+        // server-to-server — which upstreams already allow (`if (!origin) return
+        // callback(null, true)`). One allowlist, in one place, is the point.
+        proxyReq.removeHeader('origin');
         // Proof this request came through the gateway. Upstreams trust
         // x-user-id / x-identity-id ONLY when this matches, which is what lets
         // them skip a second Firebase verification. Set here rather than in
