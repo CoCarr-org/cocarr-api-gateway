@@ -122,13 +122,44 @@ const PUBLIC_ROUTES: ReadonlyArray<{ method: string; path: RegExp }> = [
 // `path` here is mount-RELATIVE (`/user/send-otp`, not `/v1/core/user/send-otp`)
 // and carries no query string. Both patterns are anchored on that assumption;
 // scripts/checkPublicImagePaths.mjs asserts it against a real Express mount.
+function isPublicImage(method: string, path: string): boolean {
+  return method === 'GET' && PUBLIC_IMAGE.test(path);
+}
+
 function isPublicCorePath(method: string, path: string): boolean {
-  if (method === 'GET' && PUBLIC_IMAGE.test(path)) return true;
+  if (isPublicImage(method, path)) return true;
   return PUBLIC_ROUTES.some((r) => r.method === method && r.path.test(path));
 }
 
+// AN IMAGE THAT IS SERVED AND THEN DISCARDED BY THE BROWSER.
+//
+// `helmet()` at the edge defaults `Cross-Origin-Resource-Policy: same-origin`,
+// which is right for an API and wrong for the one route that exists to be
+// embedded. Every panel and the rider web app render these with a plain
+// `<img src>` from a DIFFERENT origin (ops-dev.cocarr.com → apis-dev.cocarr.com),
+// so the response arrived 200 with the right bytes and the right
+// Access-Control-Allow-Origin, and Chrome threw it away with
+// `ERR_BLOCKED_BY_RESPONSE.NotSameOrigin`. A 200 in the network tab plus a
+// blank image is a genuinely confusing pair, and it sent us looking at buckets,
+// keys and base URLs — none of which were wrong.
+//
+// Only React Native was unaffected, because it does not enforce CORP. That is
+// exactly why this read as "the admin panels are broken" rather than "the image
+// proxy is broken".
+//
+// `cross-origin` rather than `same-site`: local development runs the panels on
+// localhost, which is not same-site with cocarr.com, so `same-site` would fix
+// deployed and break local. And it gives away nothing — this route is already
+// deliberately public (see the note above); possession of the unguessable key is
+// what grants access, and CORP was never the control keeping anyone out.
+//
+// Scoped to the public image GET alone. Set here rather than by loosening
+// helmet globally, so no other response's CORP changes.
 const authenticateUnlessPublic: RequestHandler = (req, res, next) => {
   if (isPublicCorePath(req.method, req.path)) {
+    if (isPublicImage(req.method, req.path)) {
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    }
     next();
     return;
   }
