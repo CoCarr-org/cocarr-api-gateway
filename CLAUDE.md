@@ -127,6 +127,29 @@ front of them. Every entry is an individually justified exception, and
 `scripts/checkPublicImagePaths.mjs` pins all of it (including those three as
 negative cases).
 
+## The image proxy also needs CORP — a 200 is not enough
+`helmet()` defaults `Cross-Origin-Resource-Policy: same-origin`, which is right
+for an API and wrong for the one route that exists to be **embedded**. Panels and
+the rider web app render these with a plain `<img src>` from a different origin
+(`ops-dev.cocarr.com` → `apis-dev.cocarr.com`), so the response arrived **200,
+correct bytes, correct `Access-Control-Allow-Origin`** — and Chrome discarded it
+with `ERR_BLOCKED_BY_RESPONSE.NotSameOrigin`.
+
+**A 200 in the network tab next to a blank image is the confusing part.** It
+sent us through buckets, object keys, `PUBLIC_API_URL` and `NEXT_PUBLIC_GATEWAY_URL`,
+none of which were wrong. **React Native does not enforce CORP**, so mobile was
+fine throughout — which is exactly why it read as "the admin panels are broken"
+rather than "the image proxy is broken". If images are blank on web and fine on
+mobile, check this header first.
+
+`core.routes.ts` sets `cross-origin` on the public image GET **only**.
+`cross-origin` rather than `same-site` because local development serves the
+panels from `localhost`, which is not same-site with `cocarr.com` — `same-site`
+would fix deployed and break local. It gives nothing away: that route is already
+deliberately public, and possession of the unguessable key is what grants access.
+`scripts/checkPublicImagePaths.mjs` asserts the header per route alongside the
+auth decision, so scoping it too widely fails the guard.
+
 ## The image proxy is PUBLIC, by necessity
 `GET /v1/core/image/<key>` bypasses `authenticate` (`core.routes.ts`). Clients
 render these with `<img src>` / RN `<Image source>`, which cannot send an

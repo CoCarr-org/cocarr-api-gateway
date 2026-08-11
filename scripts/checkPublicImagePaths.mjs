@@ -38,8 +38,9 @@ const PUBLIC_ROUTES = [
   { method: 'POST', path: /^\/utility\/validate-geo\/?$/ },
 ];
 
+const isPublicImage = (method, path) => method === 'GET' && PUBLIC_IMAGE.test(path);
 const isPublicCorePath = (method, path) => (
-  (method === 'GET' && PUBLIC_IMAGE.test(path))
+  isPublicImage(method, path)
   || PUBLIC_ROUTES.some((r) => r.method === method && r.path.test(path))
 );
 
@@ -47,7 +48,11 @@ const app = express();
 const core = express.Router();
 core.use((req, res) => {
   const isPublic = isPublicCorePath(req.method, req.path);
-  res.json({ authenticated: !isPublic, seenPath: req.path });
+  // Mirrors core.routes.ts: only the public image GET is embeddable
+  // cross-origin. helmet's default (same-origin) made every <img> on every
+  // panel arrive 200 and then get discarded by the browser.
+  const corp = isPublicImage(req.method, req.path) ? 'cross-origin' : 'same-origin';
+  res.json({ authenticated: !isPublic, corp, seenPath: req.path });
 });
 app.use('/v1/core', core);
 
@@ -141,11 +146,16 @@ let sawRelativePath = false;
 for (const [method, path, wantAuth, why] of CASES) {
   const got = await call(method, path);
   if (got.seenPath.startsWith('/image')) sawRelativePath = true;
-  const ok = got.authenticated === wantAuth;
+  // A public image must ALSO be embeddable cross-origin; everything else keeps
+  // helmet's same-origin.
+  const wantCorp = (method === 'GET' && !wantAuth && path.includes('/image/')) ? 'cross-origin' : 'same-origin';
+  const corpOk = got.corp === wantCorp;
+  const ok = got.authenticated === wantAuth && corpOk;
   if (!ok) failed += 1;
   console.log(
     `${ok ? 'ok  ' : 'FAIL'}  ${method.padEnd(4)} ${path.padEnd(34)} `
-    + `authenticated=${String(got.authenticated).padEnd(5)} want=${String(wantAuth).padEnd(5)} ${why}`,
+    + `authenticated=${String(got.authenticated).padEnd(5)} want=${String(wantAuth).padEnd(5)} `
+    + `corp=${got.corp.padEnd(12)} ${why}`,
   );
 }
 
