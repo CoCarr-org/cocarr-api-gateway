@@ -44,109 +44,14 @@ import { coreProxy } from '../proxy/core.proxy';
 // not be under `resume/`.
 const PUBLIC_IMAGE = /^\/image\/(?!url(?:\/|$))(?!resume\/).+/;
 
-// THE PRE-AUTH SURFACE. These are the core routes a caller must be able to
-// reach BEFORE it has a token, and gating them made login impossible: the web
-// app's `publicApi` posts to `/user/send-otp` to obtain a token, which answered
-// 401 `UNAUTHENTICATED` — you needed a token to reach the endpoint that issues
-// tokens. Every one of these is already unauthenticated on the core service
-// itself (see its `userRouter`, `cityRouter`, `referralRouter`), so this does
-// not widen access; it stops the gateway from being stricter than the service
-// it fronts in the one place where strictness is a deadlock.
-//
-// METHOD-SCOPED, AND THE CITY ENTRIES ARE THE REASON WHY. Upstream,
-// `PUT /city/:id` and `DELETE /city/:id` carry NO auth middleware — only
-// `POST /city` has `authenticateAdmin`. This gateway's blanket `authenticate`
-// is currently the only thing standing in front of them. So a prefix match on
-// `/city` would hand anonymous callers the ability to rewrite and delete
-// cities. Match the METHOD as well as the path, always, and never relax one of
-// these to a bare prefix.
-//
-// `/referral/status` and `/referral/validate` are public for the signup screen,
-// which runs before the referee has an account. `/referral` and
-// `/referral/history` are the user's own dashboard and stay authenticated.
-// THE PRE-LOGIN BROWSE SURFACE. The rider web app lets an anonymous visitor
-// search for cars, open a car, see its offers and a price estimate BEFORE
-// signing in — the whole funnel that leads to the login prompt. Every one of
-// these is fetched through the web app's unauthenticated `publicApi`, so gating
-// them here answers 401 `Missing Authorization header` and the landing page's
-// search returns "Missing Authorization header" instead of results.
-//
-// As with the entries above, this does NOT widen access: each is already
-// unauthenticated (or `authenticateUserOptional`) on the core service itself
-// (`vehicleRouter`, `brandRouter`, `offerRouter`, `bookingRouter`,
-// `utilityRouter`), so the gateway was simply stricter than the service it
-// fronts. The legacy monolith served all of them with no token.
-//
-// METHOD-SCOPED, AND DELIBERATELY NARROW, for the same reason the city entries
-// are: the write routes that share these prefixes carry `authenticateAdmin`
-// upstream and this gateway's `authenticate` is the only thing in front of the
-// few that don't. `POST /vehicle`, `PUT /vehicle/:id`, `POST /offers`,
-// `POST /brand` are all admin — matching GET (and only the exact public POSTs)
-// never reaches them. `/booking/summary` is pinned exactly, so it can never
-// widen to the authenticated `/booking/last-booking`, `/booking/:id` or the
-// admin `GET /booking` beside it. Never relax one of these to a bare prefix.
-const PUBLIC_CORE: ReadonlyArray<readonly [string, RegExp]> = [
-  ['POST', /^\/user\/send-otp\/?$/],
-  ['POST', /^\/user\/verify-otp\/?$/],
-  ['GET', /^\/city\/?$/],
-  ['GET', /^\/city\/[^/]+\/?$/],
-  ['GET', /^\/referral\/status\/?$/],
-  ['POST', /^\/referral\/validate\/?$/],
-  // Car search + listing (`authenticateUserOptional` upstream).
-  ['GET', /^\/vehicle\/?$/],
-  // A single car's detail page (no auth upstream).
-  ['GET', /^\/vehicle\/[^/]+\/?$/],
-  // Brand filter chips on the search page (no auth upstream).
-  ['GET', /^\/brand\/?$/],
-  // Offers shown on a car, and validating one before booking
-  // (`getOffers` no auth; `validateOffer` `authenticateUserOptional`).
-  ['GET', /^\/offers\/?$/],
-  ['GET', /^\/offers\/validate\/[^/]+\/?$/],
-  // Price estimate on the car detail page (`authenticateUserOptional`).
-  ['GET', /^\/booking\/summary\/?$/],
-  // Pickup-location search + validation used before an account exists
-  // (autocomplete/validate-place/validate-geo, all no auth upstream).
-  ['GET', /^\/utility\/autocomplete\/?$/],
-  ['POST', /^\/utility\/validate-place\/?$/],
-  ['POST', /^\/utility\/validate-geo\/?$/],
-];
-
-// `req.path` is mount-relative (`/city`, not `/v1/core/city`) and excludes the
-// query string. Both patterns above are anchored on that assumption, which
-// `scripts/checkPublicImagePaths.mjs` asserts against a real Express mount.
-const isPublic = (method: string, path: string): boolean =>
-  (method === 'GET' && PUBLIC_IMAGE.test(path))
-  || PUBLIC_CORE.some(([m, pattern]) => m === method && pattern.test(path));
-
-const authenticateUnlessPublic: RequestHandler = (req, res, next) => {
-  if (isPublic(req.method, req.path)) {
+const authenticateUnlessPublicImage: RequestHandler = (req, res, next) => {
+  if (req.method === 'GET' && PUBLIC_IMAGE.test(req.path)) {
     next();
     return;
   }
   authenticate(req as Parameters<typeof authenticate>[0], res, next);
 };
 
-// The image proxy is embedded cross-subdomain: the rider web app on
-// develop.cocarr.com, the admin and careers sites, and the mobile app all
-// render these objects with a plain <img src>. Helmet's default
-// `Cross-Origin-Resource-Policy: same-origin` blocks exactly that — the image
-// answers 200 but the browser refuses to paint it, failing with
-// `ERR_BLOCKED_BY_RESPONSE.NotSameOrigin`. CORS governs fetch(); CORP governs
-// <img>, so allowing the origin in CORS is not enough on its own.
-//
-// Relax CORP to `cross-origin` for the PUBLIC image responses ONLY. They are
-// already unauthenticated and deliberately embeddable (an unguessable-uuid key
-// is what grants access), so this widens nothing that auth was protecting —
-// every other response keeps Helmet's strict `same-origin`. Set on `res` before
-// the proxy streams; the upstream sends no CORP of its own, so this value is
-// what reaches the client (verified: Helmet's own header survives the same way).
-const allowCrossOriginForImages: RequestHandler = (req, res, next) => {
-  if (req.method === 'GET' && PUBLIC_IMAGE.test(req.path)) {
-    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-  }
-  next();
-};
-
 const router = Router();
-router.use(allowCrossOriginForImages, authenticateUnlessPublic, coreProxy);
+router.use(authenticateUnlessPublicImage, coreProxy);
 export default router;
