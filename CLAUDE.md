@@ -90,6 +90,43 @@ route. Those are two different facts; don't collapse them.
 `MINTED_HEADERS`. The two projects have **separate uid spaces**, so an upstream
 trusting `x-user-id` without it cannot tell a rider uid from a staff uid.
 
+## Sign-in is public, because it is what issues the token
+`/v1/core` is a JWT prefix, but the rider web and mobile apps **authenticate
+through core**: `POST /user/send-otp` → `POST /user/verify-otp` → only then does
+the client hold a Firebase token. Behind `authenticate` those answer **401
+`Missing Authorization header`**, so cutting both clients over to the gateway
+(`API_URL` → `…/v1/core`) made login impossible on both at once. `GET
+/referral/status` and `POST /referral/validate` are the signup screen's, called
+before the OTP by somebody who has no account yet.
+
+All four are in `PUBLIC_ROUTES` in `core.routes.ts`, matched on **method AND
+exact path** — a prefix match on `/user` would expose the whole user API, and
+ignoring the method would make `POST /referral/status` public too. `GET
+/referral` and `/referral/history` are per-user and stay authenticated.
+
+**A second group in that list is not about being signed out at all.**
+`publicApi` in cocarr-frontend (`src/api/client.js`) is a bare axios instance
+with **no request interceptor**, so it never attaches a token — not before login
+and not after. Every endpoint it touches 401s in *every* session state, which is
+how a signed-in host got "Couldn't load brands and cities" on the listing
+wizard. So `/city`, `/brand`, `/vehicle`, `/vehicle/:id`, `/booking/summary`,
+`/offers`, `/offers/validate/:id` and the three `/utility` lookups are public
+too. Most carry `authenticateUserOptional` upstream — a middleware that exists
+to serve a caller with or without a token, and the clearest available signal
+that anonymous access is intended.
+
+⚠ **`GET /booking/summary` must stay an EXACT match.** Its sibling `GET
+/booking/:id` has no auth upstream, so a `/booking/…` prefix rule here would
+hand anyone any booking by id. The guard script pins that case.
+
+⚠ **That list is NOT "whatever upstream forgot to guard", and must never be
+generated that way.** Plenty of core routes carry no `authenticateUser` and must
+stay authenticated here — `POST /settings/:type`, `DELETE /city/:id`, `POST
+/transaction`, `PUT /protection-plan/:id`. This gateway is the only thing in
+front of them. Every entry is an individually justified exception, and
+`scripts/checkPublicImagePaths.mjs` pins all of it (including those three as
+negative cases).
+
 ## The image proxy is PUBLIC, by necessity
 `GET /v1/core/image/<key>` bypasses `authenticate` (`core.routes.ts`). Clients
 render these with `<img src>` / RN `<Image source>`, which cannot send an
@@ -108,6 +145,13 @@ anchored pattern depends on). Run it after touching that file.
 ## Not done yet
 - Public core exception for the payment webhook (`/v1/hook`) when Razorpay is
   repointed at the gateway — it cannot send a Firebase token either.
+- **Per-route rate limits on `/utility/*`.** Those three proxy a paid places
+  API and are now anonymous, so they are a billing surface; the global limiter
+  is all that bounds them.
+- **`publicApi` is over-used on the rider web.** It sends no token EVER, so
+  `/offers/validate/:id` — `authenticateUserOptional` upstream — judges a
+  per-user offer as though nobody is signed in. The fix is moving that call to
+  the authenticated instance in cocarr-frontend, not widening this list.
 - Delegating auth to the Identity Service (the gateway verifies the Firebase JWT
   directly for now).
 - Per-route rate limits, request/response schema validation, tests.

@@ -44,8 +44,91 @@ import { coreProxy } from '../proxy/core.proxy';
 // not be under `resume/`.
 const PUBLIC_IMAGE = /^\/image\/(?!url(?:\/|$))(?!resume\/).+/;
 
-const authenticateUnlessPublicImage: RequestHandler = (req, res, next) => {
-  if (req.method === 'GET' && PUBLIC_IMAGE.test(req.path)) {
+// SIGN-IN CANNOT REQUIRE A TOKEN — IT IS WHAT ISSUES ONE.
+//
+// The rider web app and the mobile app both authenticate through core: a phone
+// number goes to `/user/send-otp`, the code comes back to `/user/verify-otp`,
+// and only THEN does the client hold a Firebase token to send. Behind
+// `authenticate` those two answer 401 `Missing Authorization header` — so login
+// was impossible on both clients the moment they were cut over to the gateway,
+// which is exactly what happened (see cocarr-frontend/src/config.js and
+// cocarr-app/src/utils/constants.js, both now pointing at /v1/core).
+//
+// The two referral routes are the signup screen's, called BEFORE the OTP: it
+// asks whether the programme is open before showing the code box, and validates
+// a code typed by somebody who by definition has no account yet. Their upstream
+// handlers carry an explicit "No auth" comment for that reason
+// (cocarr-core-api/src/routes/referralRouter.js).
+//
+// THIS LIST IS NOT "WHATEVER UPSTREAM FORGOT TO GUARD", and must never be
+// generated that way. A good number of core routes have no `authenticateUser`
+// on them and absolutely must stay authenticated here — `POST /settings/:type`,
+// `DELETE /city/:id`, `POST /transaction`, `PUT /protection-plan/:id` among
+// them. The gateway is currently the only thing standing in front of those, so
+// every entry below is a deliberate, individually-justified exception.
+//
+// Matched on METHOD AND EXACT PATH. A prefix match would be wrong in both
+// directions: `/user` would expose the whole user API, and allowing any method
+// would make `POST /referral/status` public too.
+//
+// THE SECOND GROUP IS NOT ABOUT BEING SIGNED OUT. `publicApi` in cocarr-frontend
+// (src/api/client.js) is a bare axios instance with NO request interceptor, so
+// it never attaches a token — not before login, and not after. Every endpoint it
+// touches therefore 401s in every session state, which is why "Couldn't load
+// brands and cities" appears on the vehicle-listing wizard to a signed-in host.
+// Whether the rider web should be calling these anonymously at all is a separate
+// question (see the note on /offers/validate below); this list reflects what it
+// does call.
+//
+// Upstream, most of the second group carries `authenticateUserOptional` — a
+// middleware that exists precisely to serve a caller with or without a token —
+// which is the clearest signal available that anonymous access is intended.
+const PUBLIC_ROUTES: ReadonlyArray<{ method: string; path: RegExp }> = [
+  // ── Sign-in: these ISSUE the token, so they cannot require one. ──
+  { method: 'POST', path: /^\/user\/send-otp\/?$/ },
+  { method: 'POST', path: /^\/user\/verify-otp\/?$/ },
+  { method: 'GET', path: /^\/referral\/status\/?$/ },
+  { method: 'POST', path: /^\/referral\/validate\/?$/ },
+
+  // ── Reference data: city and brand pickers on search and the listing wizard.
+  { method: 'GET', path: /^\/city\/?$/ },
+  { method: 'GET', path: /^\/brand\/?$/ },
+
+  // ── Anonymous browsing: the marketplace listings and their price quote.
+  // `GET /booking/summary` MUST stay an exact match — its sibling
+  // `GET /booking/:id` has no auth upstream and would hand anyone any booking
+  // by id, so a `/booking/…` prefix rule here would be a serious leak.
+  { method: 'GET', path: /^\/vehicle\/?$/ },
+  { method: 'GET', path: /^\/vehicle\/[^/]+\/?$/ },
+  { method: 'GET', path: /^\/booking\/summary\/?$/ },
+
+  // ── Offers shown against a listing before the user commits.
+  // NOTE: `/offers/validate/:id` is `authenticateUserOptional` upstream, so it
+  // judges a per-user offer as if nobody is signed in when called through
+  // `publicApi`. That is a client bug, not a gateway one — fixing it means
+  // moving the call onto the authenticated instance, not widening anything here.
+  { method: 'GET', path: /^\/offers\/?$/ },
+  { method: 'GET', path: /^\/offers\/validate\/[^/]+\/?$/ },
+
+  // ── Location lookup on the landing-page search and the listing wizard.
+  // ⚠ These proxy a paid third-party places API, so anonymous access is a
+  // BILLING surface as much as a data one. The gateway's rate limiter is the
+  // only thing bounding it — worth a per-route limit before this sees traffic.
+  { method: 'GET', path: /^\/utility\/autocomplete\/?$/ },
+  { method: 'POST', path: /^\/utility\/validate-place\/?$/ },
+  { method: 'POST', path: /^\/utility\/validate-geo\/?$/ },
+];
+
+// `path` here is mount-RELATIVE (`/user/send-otp`, not `/v1/core/user/send-otp`)
+// and carries no query string. Both patterns are anchored on that assumption;
+// scripts/checkPublicImagePaths.mjs asserts it against a real Express mount.
+function isPublicCorePath(method: string, path: string): boolean {
+  if (method === 'GET' && PUBLIC_IMAGE.test(path)) return true;
+  return PUBLIC_ROUTES.some((r) => r.method === method && r.path.test(path));
+}
+
+const authenticateUnlessPublic: RequestHandler = (req, res, next) => {
+  if (isPublicCorePath(req.method, req.path)) {
     next();
     return;
   }
@@ -53,5 +136,5 @@ const authenticateUnlessPublicImage: RequestHandler = (req, res, next) => {
 };
 
 const router = Router();
-router.use(authenticateUnlessPublicImage, coreProxy);
+router.use(authenticateUnlessPublic, coreProxy);
 export default router;
