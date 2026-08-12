@@ -1,0 +1,91 @@
+# PLATFORM HEALTH — the alert that did not exist.
+#
+# A service's entire database schema (`cocarr_workspace`) disappeared and NOTHING
+# TOLD ANYONE. The gateway's deep check reported `workspace: {ok:false}` for
+# hours; it was found by a human noticing a failed deploy, not by a monitor.
+#
+# Two gaps, and this file only closes the second one — the first is fixed in
+# health.routes.ts, which now answers 503 rather than burying "degraded" inside
+# a 200:
+#
+#   1. nothing MADE the failure visible  -> the endpoint said 200 while down
+#   2. nothing WAS LOOKING               -> this workflow
+#
+# WHY A GITHUB ACTION AND NOT A REAL MONITOR. It is not better than Better Stack
+# or Railway's own alerting — it is better than nothing, it lives in the repo
+# next to the thing it watches, it costs nothing, and it needed no account,
+# credential or dashboard to exist. A failing scheduled workflow emails the
+# people watching this repository, which is the whole requirement. Replace it
+# with a proper monitor when there is one; until then this is the difference
+# between finding out in minutes and finding out from a failed deploy.
+#
+# WHY IT POLLS THE PUBLIC EDGE. The database is on Railway's private network and
+# unreachable from a GitHub runner (this is the same wall the release workflow's
+# migrate step hit). The gateway's `/health/services` is public, needs no auth,
+# and already asks every upstream — so the one thing a runner CAN reach happens
+# to be the one thing that knows.
+name: Platform health
+
+on:
+  schedule:
+    # Every 15 minutes. GitHub's scheduler is best-effort and can be late under
+    # load — fine for "a service has been down for a while", useless as an SLA
+    # clock. Do not read the gap between runs as detection time.
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+# A late run must not queue behind a stuck one and alert twice for one outage.
+concurrency:
+  group: platform-health
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      # Never cancel dev because prod failed, or the log only shows one.
+      fail-fast: false
+      matrix:
+        include:
+          - name: dev
+            url: https://apis-dev.cocarr.com
+    steps:
+      - name: Check ${{ matrix.name }}
+        run: |
+          set -uo pipefail
+          URL="${{ matrix.url }}/health/services"
+
+          # Two retries before alerting. A single failed poll is as likely to be
+          # a runner network blip or a container restarting as a real outage,
+          # and an alert people learn to ignore is worse than no alert.
+          for attempt in 1 2 3; do
+            BODY=$(curl -sS --max-time 25 -w '\n%{http_code}' "$URL" || echo -e '\n000')
+            CODE=$(printf '%s' "$BODY" | tail -n1)
+            JSON=$(printf '%s' "$BODY" | sed '$d')
+
+            if [ "$CODE" = "200" ]; then
+              echo "::notice::${{ matrix.name }} healthy"
+              exit 0
+            fi
+
+            echo "attempt $attempt: HTTP $CODE"
+            [ $attempt -lt 3 ] && sleep 20
+          done
+
+          echo "$JSON"
+
+          # 000 = no response at all. That is the gateway itself being
+          # unreachable, which is a different and worse fact than one upstream
+          # being unwell — say which, or whoever is paged starts in the wrong
+          # place.
+          if [ "$CODE" = "000" ]; then
+            echo "::error::${{ matrix.name }} — the GATEWAY is unreachable at ${{ matrix.url }}. Nothing is serving."
+            exit 1
+          fi
+
+          DOWN=$(printf '%s' "$JSON" | jq -r '.unhealthy // [] | join(", ")' 2>/dev/null || echo '')
+          DETAIL=$(printf '%s' "$JSON" | jq -c '[.services[]? | select(.ok == false)]' 2>/dev/null || echo '')
+
+          echo "::error::${{ matrix.name }} DEGRADED (HTTP $CODE) — unhealthy: ${DOWN:-unknown}"
+          echo "::error::$DETAIL"
+          exit 1
